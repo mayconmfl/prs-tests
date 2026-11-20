@@ -1,0 +1,82 @@
+name: Create release PR
+
+# Opens the pull request that releases main to production: from a release-<sha> branch frozen at the main commit
+# the workflow runs on, so what gets approved is what ships. The production ruleset requires one approval and a
+# merge commit.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: create-release-pr
+  cancel-in-progress: false
+
+jobs:
+  create-release-pr:
+    # "Run workflow" lets you pick any branch; only main is released
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      # In cos-inspection-service: secrets.COS_ROBOT_GITHUB_TOKEN, so that ci.yml runs on the pull request
+      # (a pull request opened with GITHUB_TOKEN starts no workflow).
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE_DIR: packages/cos-inspection-service
+      REQUESTED_BY: ${{ github.triggering_actor }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ env.GH_TOKEN }}
+
+      - name: Open the release pull request
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin production
+
+          sha=$(git rev-parse --short=10 HEAD)
+          branch="release-$sha"
+          base=$(git merge-base origin/production HEAD)
+
+          if [ "$(git rev-list --count origin/production..HEAD)" = "0" ]; then
+            echo "::notice::production already has main at $sha: nothing to release."
+            exit 0
+          fi
+
+          open=$(gh pr list --base production --state open --json url --jq '.[0].url // empty')
+          if [ -n "$open" ]; then
+            echo "::error::A release pull request is already open: $open. Merge or close it first."
+            exit 1
+          fi
+
+          version=$(jq -r .version "$PACKAGE_DIR/package.json")
+          changes=$(git log --format='- %s' "$base..HEAD" | grep -v '^- chore(release)' || true)
+          migrations=$(git diff --name-only --diff-filter=A "$base" HEAD -- "$PACKAGE_DIR/prisma/migrations" \
+            | grep '/migration.sql$' | xargs -r -n1 dirname | xargs -r -n1 basename | sed 's/^/- `/; s/$/`/' || true)
+
+          {
+            echo "Releases \`main\` at $sha to production. Requested by @$REQUESTED_BY."
+            echo
+            echo "**Version:** $version"
+            echo
+            echo "**Changes**"
+            echo
+            echo "${changes:-- None}"
+            echo
+            echo "**Prisma migrations** (\`release.sh\` runs them before the deploy)"
+            echo
+            echo "${migrations:-- None}"
+          } > body.md
+
+          git push --quiet origin "HEAD:refs/heads/$branch"
+          url=$(gh pr create --base production --head "$branch" \
+            --title "chore: [SHIP] Release from $sha" \
+            --body-file body.md \
+            --assignee "$REQUESTED_BY")
+
+          echo "Release pull request: $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url"
