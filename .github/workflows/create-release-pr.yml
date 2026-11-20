@@ -1,8 +1,8 @@
 name: Create release PR
 
-# Opens the pull request that releases main to production: from a release-<sha> branch frozen at the main commit
-# the workflow runs on, so what gets approved is what ships. The production ruleset requires one approval and a
-# merge commit.
+# Opens the pull request that releases main to production, through the GitHub API only: from a release-<sha>
+# branch frozen at the main commit the workflow runs on, so what gets approved is what ships. The production
+# ruleset requires one approval and a merge commit.
 
 on:
   workflow_dispatch:
@@ -21,29 +21,22 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      # In cos-inspection-service: secrets.COS_ROBOT_GITHUB_TOKEN, so that ci.yml runs on the pull request
-      # (a pull request opened with GITHUB_TOKEN starts no workflow).
+      # cos-robot's token, so that ci.yml runs on the pull request: one opened with GITHUB_TOKEN starts no workflow.
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
       PACKAGE_DIR: packages/cos-inspection-service
       REQUESTED_BY: ${{ github.triggering_actor }}
     steps:
-      - name: Check out main
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ env.GH_TOKEN }}
-
       - name: Open the release pull request
         run: |
           set -euo pipefail
-          git fetch --quiet origin production
+          sha="$GITHUB_SHA"
+          short="${sha:0:10}"
+          branch="release-$short"
 
-          sha=$(git rev-parse --short=10 HEAD)
-          branch="release-$sha"
-          base=$(git merge-base origin/production HEAD)
-
-          if [ "$(git rev-list --count origin/production..HEAD)" = "0" ]; then
-            echo "::notice::production already has main at $sha: nothing to release."
+          gh api "repos/$GH_REPO/compare/production...$sha" > compare.json
+          if [ "$(jq .ahead_by compare.json)" = "0" ]; then
+            echo "::notice::production already has main at $short: nothing to release."
             exit 0
           fi
 
@@ -53,13 +46,15 @@ jobs:
             exit 1
           fi
 
-          version=$(jq -r .version "$PACKAGE_DIR/package.json")
-          changes=$(git log --format='- %s' "$base..HEAD" | grep -v '^- chore(release)' || true)
-          migrations=$(git diff --name-only --diff-filter=A "$base" HEAD -- "$PACKAGE_DIR/prisma/migrations" \
-            | grep '/migration.sql$' | xargs -r -n1 dirname | xargs -r -n1 basename | sed 's/^/- `/; s/$/`/' || true)
+          version=$(gh api "repos/$GH_REPO/contents/$PACKAGE_DIR/package.json?ref=$sha" --jq .content | base64 -d | jq -r .version)
+          changes=$(jq -r '[.commits[].commit.message | split("\n")[0] | select(startswith("chore(release)") | not)]
+            | reverse | map("- " + .) | join("\n")' compare.json)
+          migrations=$(jq -r --arg dir "$PACKAGE_DIR/prisma/migrations/" '[.files[]
+            | select(.status == "added" and (.filename | startswith($dir)) and (.filename | endswith("/migration.sql")))
+            | "- `" + (.filename | split("/")[-2]) + "`"] | join("\n")' compare.json)
 
           {
-            echo "Releases \`main\` at $sha to production. Requested by @$REQUESTED_BY."
+            echo "Releases \`main\` at $short to production. Requested by @$REQUESTED_BY."
             echo
             echo "**Version:** $version"
             echo
@@ -72,9 +67,9 @@ jobs:
             echo "${migrations:-- None}"
           } > body.md
 
-          git push --quiet origin "HEAD:refs/heads/$branch"
+          gh api -X POST "repos/$GH_REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" > /dev/null
           url=$(gh pr create --base production --head "$branch" \
-            --title "chore: [SHIP] Release from $sha" \
+            --title "chore: [SHIP] Release from $short" \
             --body-file body.md \
             --assignee "$REQUESTED_BY")
 
