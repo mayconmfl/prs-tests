@@ -17,8 +17,6 @@ concurrency:
 
 jobs:
   create-release-pr:
-    # "Run workflow" lets you pick any branch; only main is released
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       # cos-robot's token, so that ci.yml runs on the pull request: one opened with GITHUB_TOKEN starts no workflow.
@@ -27,6 +25,13 @@ jobs:
       PACKAGE_DIR: packages/cos-inspection-service
       REQUESTED_BY: ${{ github.triggering_actor }}
     steps:
+      # "Run workflow" lets you pick any branch and GitHub cannot hide that choice; only main is released
+      - name: Refuse any branch other than main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this workflow on main: $GITHUB_REF_NAME cannot be released."
+          exit 1
+
       - name: Open the release pull request
         run: |
           set -euo pipefail
