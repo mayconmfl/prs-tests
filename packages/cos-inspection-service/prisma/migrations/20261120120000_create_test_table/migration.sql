@@ -1,0 +1,1 @@
+CREATE TABLE "Test" ("id" TEXT PRIMARY KEY);
