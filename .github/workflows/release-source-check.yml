@@ -3,6 +3,8 @@ name: Release source check
 # Required by the production ruleset. A pull request into production may only come from a release-<sha> branch,
 # which only the Create release PR action can create, and every commit in it must already be on main.
 # pull_request_target runs this file as it is on production, so a pull request cannot change the check.
+# A pull request from any other branch is closed: the check result belongs to the commit, so an open one from main
+# would block a release of the same commit, and turn green once the release's check runs again.
 
 on:
   pull_request_target:
@@ -11,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   commits-on-main:
@@ -21,12 +24,15 @@ jobs:
       HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Check the source branch and its commits
         run: |
           set -euo pipefail
           if [ "$HEAD_REPO" != "$GH_REPO" ] || [[ "$HEAD_REF" != release-* ]]; then
-            echo "::error::$HEAD_REF is not a release branch: open the release pull request with the Create release PR action."
+            message="$HEAD_REF is not a release branch: open the release pull request with the Create release PR action."
+            gh pr close "$PR_NUMBER" --comment "Closed: $message"
+            echo "::error::$message"
             exit 1
           fi
           status=$(gh api "repos/$GH_REPO/compare/main...$HEAD_SHA" --jq .status)
