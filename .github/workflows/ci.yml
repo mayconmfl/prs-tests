@@ -1,0 +1,18 @@
+name: CI
+
+# Test stand-in for cos-inspection-service's ci.yml: fails when app.txt contains BROKEN, takes 3 minutes when it
+# contains SLOW.
+
+on:
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if grep -q SLOW app.txt; then sleep 180; fi
+          if grep -q BROKEN app.txt; then echo "::error::Tests fail: app.txt contains BROKEN."; exit 1; fi
+          echo "Tests pass."
