@@ -24,6 +24,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PACKAGE_DIR: packages/cos-inspection-service
       REQUESTED_BY: ${{ github.triggering_actor }}
+      RELEASE_ROBOT_KEY: ${{ secrets.RELEASE_ROBOT_KEY }}
     steps:
       # "Run workflow" lets you pick any branch and GitHub cannot hide that choice; only main is released
       - name: Refuse any branch other than main
@@ -72,7 +73,13 @@ jobs:
             echo "${migrations:-- None}"
           } > body.md
 
-          gh api -X POST "repos/$GH_REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" > /dev/null
+          # Test only: the release robot is a deploy key here (cos-robot's token in cos-inspection-service)
+          printf '%s\n' "$RELEASE_ROBOT_KEY" > "$RUNNER_TEMP/robot_key" && chmod 600 "$RUNNER_TEMP/robot_key"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/robot_key -o StrictHostKeyChecking=accept-new"
+          git init -q "$RUNNER_TEMP/r" && cd "$RUNNER_TEMP/r"
+          git fetch -q --depth=1 "git@github.com:$GH_REPO.git" "$sha"
+          git push -q "git@github.com:$GH_REPO.git" "$sha:refs/heads/$branch"
+          cd "$GITHUB_WORKSPACE"
           url=$(gh pr create --base production --head "$branch" \
             --title "chore: [SHIP] Release from $short" \
             --body-file body.md \
