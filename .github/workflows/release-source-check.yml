@@ -1,10 +1,12 @@
 name: Release source check
 
-# Required by the production ruleset. A pull request into production may only come from a release-<sha> branch,
-# which only the Create release PR action can create, and every commit in it must already be on main.
+# Required by the production ruleset, which also requires one approval. A pull request into production may come from:
+# - release-<sha>, which only the Create release PR action can create: every commit must be on main, and this check
+#   approves it, so a release needs no one else;
+# - hotfix-*, branched from production: it needs the approval of someone other than its author.
+# Any other pull request is closed: the check result belongs to the commit, so an open one from main would block a
+# release of the same commit, and turn green once the release's check runs again.
 # pull_request_target runs this file as it is on production, so a pull request cannot change the check.
-# A pull request from any other branch is closed: the check result belongs to the commit, so an open one from main
-# would block a release of the same commit, and turn green once the release's check runs again.
 
 on:
   pull_request_target:
@@ -16,7 +18,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  commits-on-main:
+  release-source:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -26,18 +28,27 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      - name: Check the source branch and its commits
+      - name: Check the source branch
         run: |
           set -euo pipefail
-          if [ "$HEAD_REPO" != "$GH_REPO" ] || [[ "$HEAD_REF" != release-* ]]; then
-            message="$HEAD_REF is not a release branch: open the release pull request with the Create release PR action."
+          if [ "$HEAD_REPO" = "$GH_REPO" ] && [[ "$HEAD_REF" == release-* ]]; then
+            status=$(gh api "repos/$GH_REPO/compare/main...$HEAD_SHA" --jq .status)
+            if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+              echo "::error::$HEAD_REF has commits that are not on main (compare status: $status)."
+              exit 1
+            fi
+            gh pr review "$PR_NUMBER" --approve --body "Release branch: every commit is on main."
+            echo "$HEAD_REF only has commits from main: approved."
+          elif [ "$HEAD_REPO" = "$GH_REPO" ] && [[ "$HEAD_REF" == hotfix-* ]]; then
+            status=$(gh api "repos/$GH_REPO/compare/production...$HEAD_SHA" --jq .status)
+            if [ "$status" != "ahead" ]; then
+              echo "::error::$HEAD_REF must branch from production (compare status: $status)."
+              exit 1
+            fi
+            echo "::notice::Hotfix: needs one approval from someone else. Bring the fix to main too, or the next release removes it."
+          else
+            message="$HEAD_REF is neither a release nor a hotfix branch: open the release pull request with the Create release PR action, or branch a hotfix-* from production."
             gh pr close "$PR_NUMBER" --comment "Closed: $message"
             echo "::error::$message"
             exit 1
           fi
-          status=$(gh api "repos/$GH_REPO/compare/main...$HEAD_SHA" --jq .status)
-          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
-            echo "::error::$HEAD_REF has commits that are not on main (compare status: $status)."
-            exit 1
-          fi
-          echo "$HEAD_REF only has commits from main."
