@@ -1,0 +1,23 @@
+name: Test helper open PR
+
+# Test only: opens a pull request as github-actions, so that the repository owner can review it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        type: string
+        required: true
+
+permissions:
+  pull-requests: write
+
+jobs:
+  open:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      HEAD: ${{ inputs.head }}
+    steps:
+      - run: gh pr create --base production --head "$HEAD" --title "Hotfix from $HEAD" --body "Test hotfix."
